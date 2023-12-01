@@ -159,6 +159,33 @@ def _typename_with_first_generic_argument(gdb_type):
     return _typename_with_n_generic_arguments(gdb_type, 1)
 
 
+class AtomicPrinter:
+    "Print atomic"
+
+    def __init__ (self, val):
+        self.val = val
+
+    def children (self):
+        return [('load()', self.val['__a_']['__a_value'])]
+
+    def to_string (self):
+        return 'std::atomic'
+
+
+class StdPairPrinter(object):
+    "Print a std::pair"
+
+    def __init__ (self, val):
+        self.val = val
+
+    def children (self):
+        return [('first', self.val['first']), ('second', self.val['second'])]
+
+    def to_string (self):
+        typename = _remove_generics(_prettify_typename(self.val.type))
+        return "%s containing" % typename
+
+
 class StdTuplePrinter(object):
     """Print a std::tuple."""
 
@@ -922,6 +949,70 @@ class StdUnorderedMapIteratorPrinter(AbstractHashMapIteratorPrinter):
         return "map"
 
 
+class StdOptionalPrinter:
+    "Print std::optional"
+
+    def __init__(self, val):
+        if val['__engaged_']:
+            self.val = val['__val_'].address.dereference()
+        else:
+            self.val = None
+
+    def children(self):
+        return [] if self.val is None else [('value()', self.val)]
+
+    def to_string(self):
+        return 'std::optional' + (' empty' if self.val is None else '')
+
+
+class StdVariantPrinter(object):
+    'Print a std::variant'
+
+    def __init__(self, val):
+        self.val = val
+        impl = val['__impl']
+        index = impl['__index']
+        if index < 20000000000000000:
+            self.itemtype = val.type.template_argument(index)
+            x = impl['__data']
+            for i in range(index):
+                x = x['__tail']
+            self.item = x['__head']['__value']
+        else:
+            self.itemtype = None
+            self.item = None
+
+    def children(self):
+        return [] if self.item is None else [('%s' % _prettify_typename(self.itemtype), self.item)]
+
+    def to_string(self):
+        return 'std::variant' + (' (valueless by exception)' if self.item is None else '')
+
+
+class StdThreadPrinter:
+    "Print std::thread"
+
+    def __init__(self, val):
+        self.val = val['__t_']
+
+    def children(self):
+        if self.val == 0:
+            return []
+        inferior = gdb.selected_inferior()
+        if inferior is None:
+            return []
+        if hasattr(inferior, 'thread_from_handle'):
+            thread = inferior.thread_from_handle(self.val)
+        else:
+            thread = inferior.thread_from_thread_handle(self.val)
+        if thread is not None and thread.is_valid():
+            return [('pthread_t', self.val), ('lwpid', thread.ptid[1]), ('name', thread.name), ('num', thread.num)]
+        return []
+
+    def to_string(self):
+        return 'std::thread'
+
+
 def _remove_std_prefix(typename):
     match = re.match("^std::(.+)", typename)
     return match.group(1) if match is not None else ""
@@ -939,6 +1030,7 @@ class LibcxxPrettyPrinter(object):
             "basic_string": StdStringPrinter,
             "string": StdStringPrinter,
             "string_view": StdStringViewPrinter,
+            "pair": StdPairPrinter,
             "tuple": StdTuplePrinter,
             "unique_ptr": StdUniquePtrPrinter,
             "shared_ptr": StdSharedPointerPrinter,
@@ -967,6 +1059,10 @@ class LibcxxPrettyPrinter(object):
             "__hash_map_const_iterator": StdUnorderedMapIteratorPrinter,
             "__hash_iterator": StdUnorderedSetIteratorPrinter,
             "__hash_const_iterator": StdUnorderedSetIteratorPrinter,
+            "atomic": AtomicPrinter,
+            "optional": StdOptionalPrinter,
+            "variant": StdVariantPrinter,
+            "thread": StdThreadPrinter,
         }
 
         self.subprinters = []
